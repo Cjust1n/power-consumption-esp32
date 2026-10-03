@@ -50,10 +50,10 @@ void loop() {
 
     // HANYA CETAK ANGKA UNTUK SERIAL PLOTTER
     // Contoh: Mencetak nilai arus saja
-    Serial.println(current,4);
-
+    Serial.print(current,4);
+    Serial.print(";");
     // Jika ingin menampilkan 2 grafik sekaligus (Tegangan & Arus), gunakan format ini:
-    // Serial.print(voltage);
+    Serial.println(voltage);
     // Serial.print(" ");
     // Serial.println(current);
   }

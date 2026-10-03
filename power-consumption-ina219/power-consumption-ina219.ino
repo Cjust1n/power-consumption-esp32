@@ -5,139 +5,295 @@
 Adafruit_INA219 ina219;
 File dataFile;
 
-// Konfigurasi Pin I2C
+// =========================
+// PIN I2C
+// =========================
 const int I2C_SDA = 27;
 const int I2C_SCL = 26;
 
-const unsigned long INTERVAL_US = 50; // 100 us = 0.1 ms
-const int MAX_RECORDS = 2000;          // Batasi jumlah data di RAM
-unsigned long previous_time_us = 0;
+// =========================
+// SAMPLING
+// =========================
+// Target = 200 us = 5 kHz
+const unsigned long INTERVAL_US = 200;
 
+const int MAX_RECORDS = 4000;
+
+// =========================
+// DATA STRUCTURE
+// =========================
 struct SensorData {
   unsigned long time_us;
   float busV;
-  float shuntV;
-  float current;
-  float power;
+  float shunt_mV;
+  float current_mA;
+  float power_mW;
 };
 
 SensorData dataBuffer[MAX_RECORDS];
+
 int recordCount = 0;
+
 bool isRecording = true;
-bool dataPrinted = false; // Penanda agar plotting hanya berjalan sekali setelah selesai
+bool dataPrinted = false;
 
-// Fungsi untuk menulis register INA219 (mengatur kecepatan ADC 9-bit)
-void writeReg(uint8_t reg, uint16_t val) {
-  Wire.beginTransmission(0x40); 
-  Wire.write(reg);
-  Wire.write((val >> 8) & 0xFF);
-  Wire.write(val & 0xFF);
-  Wire.endTransmission();
-}
 
+// ============================================================
+// SETUP
+// ============================================================
 void setup() {
+
   Serial.begin(921600);
   delay(1000);
-  
+
+  Serial.println();
+  Serial.println("=================================");
+  Serial.println(" INA219 Power Measurement");
+  Serial.println(" Target Sampling = 200 us");
+  Serial.println("=================================");
+
+  // ==========================================================
+  // I2C
+  // ==========================================================
   Wire.begin(I2C_SDA, I2C_SCL);
-  Wire.setClock(1000000); // I2C Fast Mode 400kHz
 
+  // I2C 800 kHz
+  Wire.setClock(800000);
+
+  Serial.println("I2C initialized");
+
+
+  // ==========================================================
+  // INA219
+  // ==========================================================
   if (!ina219.begin()) {
-    while (1); // Diam jika sensor tidak ada
-  }
-  
-  ina219.setCalibration_32V_2A();
-  
-  // Set ADC ke 9-bit untuk sampling cepat (~84us)
-  writeReg(0x00, 0x399F); 
 
-  if (!SPIFFS.begin(true)) {
-    while (1);
+    Serial.println("ERROR: INA219 tidak ditemukan!");
+
+    while (1) {
+      delay(1000);
+    }
   }
+
+  Serial.println("INA219 ditemukan.");
+
+
+  // ==========================================================
+  // INA219 CALIBRATION
+  // ==========================================================
+
+  // Untuk INA219 dengan shunt 0.1 ohm
+  // Range:
+  // Bus voltage : 0 - 32 V
+  // Current     : 0 - 2 A
+  //
+  // Jika menggunakan Adafruit INA219 breakout standar,
+  // ini merupakan konfigurasi umum.
+
+  ina219.setCalibration_32V_2A();
+
+  Serial.println("INA219 calibration: 32V / 2A");
+
+
+  // ==========================================================
+  // SPIFFS
+  // ==========================================================
+  if (!SPIFFS.begin(true)) {
+
+    Serial.println("ERROR: Gagal mount SPIFFS!");
+
+    while (1) {
+      delay(1000);
+    }
+  }
+
+  Serial.println("SPIFFS OK");
+
+  Serial.println();
+  Serial.println("Mulai merekam...");
+  Serial.println();
 }
 
+
+// ============================================================
+// LOOP
+// ============================================================
 void loop() {
+
   static unsigned long lastTime = micros();
 
-  // FASE 1: Proses Sampling Cepat ke RAM
+  // ==========================================================
+  // PHASE 1
+  // Sampling ke RAM
+  // ==========================================================
   if (isRecording) {
+
     unsigned long now = micros();
-    if (now - lastTime >= INTERVAL_US) {
-      lastTime = now;
 
-      // Baca register Shunt (0x01) dan Bus (0x02) sekaligus
-      Wire.beginTransmission(0x40);
-      Wire.write(0x01); 
-      Wire.endTransmission(false);
-      Wire.requestFrom(0x40, 4); 
+    if ((unsigned long)(now - lastTime) >= INTERVAL_US) {
 
-      if (Wire.available() >= 4) {
-        int16_t rawShunt = (Wire.read() << 8) | Wire.read();
-        int16_t rawBus   = (Wire.read() << 8) | Wire.read();
+      lastTime += INTERVAL_US;
 
-        float shuntV  = rawShunt * 0.01;                // dalam mV (1 LSB = 10 uV = 0.01 mV)
-        
-        // PERBAIKAN DI SINI: Geser 3 bit ke kanan untuk membuang bit status (CNVR & OVF)
-        // dan kalikan dengan LSB Bus Voltage (4 mV = 0.004 V)
-        float busV    = ((rawBus >> 3) & 0x1FFF) * 0.004;          
-        
-        float current = shuntV * (2000.0 / 80.0);       // sesuaikan dengan kalibrasi Anda (mA)
-        float power   = (busV * current) / 1000.0;      // Daya dalam Watt atau mW (sesuaikan formula)
+      // ======================================================
+      // Baca INA219
+      // ======================================================
 
-        if (recordCount < MAX_RECORDS) {
+      float busV =
+        ina219.getBusVoltage_V();
 
-          if (recordCount > 0) {
-            unsigned long interval_delta = now - dataBuffer[recordCount - 1].time_us;
-            Serial.print("Interval actual (us): ");
-            Serial.println(interval_delta);
-          }
+      float shunt_mV =
+        ina219.getShuntVoltage_mV();
 
-          dataBuffer[recordCount].time_us = now;
-          dataBuffer[recordCount].busV = busV;
-          dataBuffer[recordCount].shuntV = shuntV;
-          dataBuffer[recordCount].current = current;
-          dataBuffer[recordCount].power = power;
-          recordCount++;
-        } else {
-          isRecording = false; // Berhenti merekam jika RAM penuh
-        }
+      float current_mA =
+        ina219.getCurrent_mA();
+
+      float power_mW =
+        ina219.getPower_mW();
+
+
+      // ======================================================
+      // Simpan ke RAM
+      // ======================================================
+
+      if (recordCount < MAX_RECORDS) {
+
+        dataBuffer[recordCount].time_us = now;
+
+        dataBuffer[recordCount].busV = busV;
+
+        dataBuffer[recordCount].shunt_mV = shunt_mV;
+
+        dataBuffer[recordCount].current_mA = current_mA;
+
+        dataBuffer[recordCount].power_mW = power_mW;
+
+        recordCount++;
+
+      } else {
+
+        isRecording = false;
       }
     }
   }
 
-  // FASE 2: Simpan ke SPIFFS dan Tampilkan ke Serial Plotter
-  if (!isRecording && !dataPrinted) {
-    // Simpan ke file permanen (SPIFFS)
-    dataFile = SPIFFS.open("/data.csv", FILE_WRITE);
-    dataFile.println("timestamp_us,bus_voltage_V,shunt_voltage_mV,current_mA,power_mW");
-    for (int i = 0; i < MAX_RECORDS; i++) {
-      dataFile.printf("%lu,%.4f,%.4f,%.4f,%.4f\n", 
-                      dataBuffer[i].time_us, 
-                      dataBuffer[i].busV, 
-                      dataBuffer[i].shuntV, 
-                      dataBuffer[i].current, 
-                      dataBuffer[i].power);
-    }
-    dataFile.close();
 
-    // Cetak format yang ramah Serial Plotter (Arduino IDE: Ctrl + Shift + L)
-    // Format: Label:Nilai dipisahkan koma
-    delay(1000); // Jeda sejenak agar plotter siap
-    for (int i = 0; i < MAX_RECORDS; i++) {
-      Serial.print("Current_mA:");
-      Serial.print(dataBuffer[i].current);
-      Serial.print("\t"); // Tab digunakan Arduino Serial Plotter sebagai pemisah antar variabel
-      
-      Serial.print("BusV_V:");
-      Serial.print(dataBuffer[i].busV);
-      Serial.print("\t");
-      
-      Serial.print("Power_mW:");
-      Serial.println(dataBuffer[i].power); // Baris terakhir pakai println
-      
-      delay(2); // Jeda kecil (2ms) agar Serial Plotter tidak kewalahan menerima data sekaligus
+  // ==========================================================
+  // PHASE 2
+  // Simpan ke SPIFFS + Serial Plotter
+  // ==========================================================
+  if (!isRecording && !dataPrinted) {
+
+    Serial.println();
+    Serial.println("=================================");
+    Serial.println("Perekaman selesai.");
+    Serial.println("=================================");
+
+    Serial.print("Jumlah data: ");
+    Serial.println(recordCount);
+
+
+    // ========================================================
+    // SIMPAN KE SPIFFS
+    // ========================================================
+
+    Serial.println();
+    Serial.println("Menyimpan ke SPIFFS...");
+
+    dataFile = SPIFFS.open("/data.csv", FILE_WRITE);
+
+    if (!dataFile) {
+
+      Serial.println("ERROR: Tidak dapat membuka /data.csv");
+
+    } else {
+
+      dataFile.println(
+        "timestamp_us,bus_voltage_V,shunt_voltage_mV,current_mA,power_mW"
+      );
+
+      for (int i = 0; i < recordCount; i++) {
+
+        dataFile.printf(
+          "%lu,%.6f,%.6f,%.6f,%.6f\n",
+          dataBuffer[i].time_us,
+          dataBuffer[i].busV,
+          dataBuffer[i].shunt_mV,
+          dataBuffer[i].current_mA,
+          dataBuffer[i].power_mW
+        );
+      }
+
+      dataFile.close();
+
+      Serial.println("Data berhasil disimpan ke /data.csv");
     }
-    
-    dataPrinted = true; // Tandai selesai agar tidak mengulang terus
+
+
+    // ========================================================
+    // HITUNG INTERVAL SAMPLING AKTUAL
+    // ========================================================
+
+    if (recordCount > 1) {
+
+      unsigned long total_duration =
+        dataBuffer[recordCount - 1].time_us -
+        dataBuffer[0].time_us;
+
+      float avg_interval =
+        (float)total_duration /
+        (float)(recordCount - 1);
+
+      float sampling_rate =
+        1000000.0 / avg_interval;
+
+      Serial.println();
+      Serial.print("Rata-rata interval sampling: ");
+      Serial.print(avg_interval, 2);
+      Serial.println(" us");
+
+      Serial.print("Sampling rate: ");
+      Serial.print(sampling_rate, 2);
+      Serial.println(" Hz");
+    }
+
+
+    // ========================================================
+    // DELAY SEBELUM SERIAL PLOTTER
+    // ========================================================
+
+    delay(2000);
+
+
+    // ========================================================
+    // SERIAL PLOTTER
+    // ========================================================
+
+    Serial.println();
+    Serial.println("--- Serial Plotter Stream ---");
+
+    for (int i = 0; i < recordCount; i++) {
+
+      Serial.print("Current_mA:");
+      Serial.print(dataBuffer[i].current_mA, 4);
+
+      Serial.print("\t");
+
+      Serial.print("BusV_V:");
+      Serial.print(dataBuffer[i].busV, 4);
+
+      Serial.print("\t");
+
+      Serial.print("Power_mW:");
+      Serial.println(dataBuffer[i].power_mW, 4);
+
+      delay(2);
+    }
+
+    dataPrinted = true;
+
+    Serial.println();
+    Serial.println("=================================");
+    Serial.println("Selesai.");
+    Serial.println("=================================");
   }
 }
