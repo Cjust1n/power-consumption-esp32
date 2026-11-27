@@ -141,4 +141,4 @@ ditahan dalam kondisi reset/sleep) dan hanya dinyalakan saat pengambilan data.
 ## Tautan
 
 - Drive (weekly report, progress): https://drive.google.com/drive/u/0/folders/1DivNwAy3LRpfj3x2x6oECZL3kuvC-8ZJ
-- Master PPT: https://canva.link/kqhl9tsjeaflhhu
+- Video Demo: https://youtu.be/LXVgGA-lFak
